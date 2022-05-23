@@ -38,6 +38,8 @@ fn main() -> Result<(), anyhow::Error> {
     let cutoff = Duration::from_secs(60);
     let workday = Duration::from_secs(60 * 60 * 8);
 
+    let night_time = Duration::from_secs(60 * 60 * 7);
+
     let just_started = Duration::from_secs(60 * 5);
     let good_chunk_of_work = Duration::from_secs(60 * 30);
 
@@ -85,6 +87,9 @@ fn main() -> Result<(), anyhow::Error> {
                 if start_idle.duration_since(start) > cutoff {
                     state = WorkingSince(start_idle);
                     println!("\nYou just started working again.");
+                } else if t > night_time && screen_time > Duration::from_secs(0) {
+                    println!("\nI think it is a new day.  Resetting.");
+                    screen_time = Duration::from_secs(0);
                 } else {
                     print!("\rYou have been idle for {}      ", t.pretty());
                 }
