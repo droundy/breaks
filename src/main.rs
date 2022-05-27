@@ -25,14 +25,8 @@ impl Break {
             last_done: Duration::from_secs(0),
         }
     }
-    fn check(&mut self, worktime: Duration) -> anyhow::Result<bool> {
-        if worktime > self.after + self.last_done {
-            if request_user(&self.prompt)? {
-                self.last_done = worktime;
-            }
-            return Ok(true);
-        }
-        Ok(false)
+    fn check(&mut self, worktime: Duration) -> bool {
+        worktime > self.after + self.last_done
     }
 }
 
@@ -78,11 +72,20 @@ impl Default for Config {
     }
 }
 
-#[derive(Clone, Debug)]
+use druid::{Data, Lens};
+
+#[derive(Clone, Debug, Data, Lens)]
 struct State {
+    #[data(ignore)]
     config: Config,
 
+    am_prompting: Option<String>,
+    status_report: String,
+    latest_update: String,
+
+    #[data(ignore)]
     status: Status,
+    #[data(ignore)]
     breaks: Vec<Break>,
     screen_time: Duration,
     last_prompt: Instant,
@@ -101,6 +104,9 @@ impl State {
             screen_time: Duration::from_secs(0),
             last_prompt: Instant::now(),
             breaks: config.breaks.clone(),
+            am_prompting: None,
+            status_report: "Starting up...".to_string(),
+            latest_update: "".to_string(),
             config,
         }
     }
@@ -115,31 +121,41 @@ impl State {
                     let start_idle = now - t;
                     self.screen_time += start_idle.duration_since(start);
                     self.status = IdleSince(start_idle);
-                    print!("\rYou have been working {}", self.screen_time.pretty());
-                    println!("\nYou are now AFK!");
+                    self.status_report = format!(
+                        "After working {} you are now AFK!",
+                        self.screen_time.pretty()
+                    );
                 } else {
                     let this_work = now.duration_since(start);
                     if this_work + self.screen_time > config.workday
                         && self.last_prompt.elapsed() > config.just_started
                     {
+                        self.am_prompting = Some(format!(
+                            "End of day after {}",
+                            (this_work + self.screen_time).pretty()
+                        ));
                         notify(&format!(
                             "End of day after {}",
                             (this_work + self.screen_time).pretty()
                         ))?;
                         self.last_prompt = now;
-                    } else if this_work < config.just_started
-                        || this_work > config.good_chunk_of_work
+                    } else if (this_work < config.just_started
+                        || this_work > config.good_chunk_of_work)
+                        && self.am_prompting.is_none()
+                        && !am_in_meet()
                     {
                         for b in self.breaks.iter_mut() {
                             if now.duration_since(self.last_prompt) > config.prompt_gap {
-                                if b.check(this_work + self.screen_time)? {
+                                if b.check(this_work + self.screen_time) {
+                                    self.am_prompting = Some(b.prompt.to_string());
+                                    b.last_done = this_work + self.screen_time;
                                     self.last_prompt = now;
                                 }
                             }
                         }
                     }
-                    print!(
-                        "\rYou have been working {}",
+                    self.latest_update = format!(
+                        "You have been working for {}",
                         (this_work + self.screen_time).pretty()
                     );
                     std::io::stdout().flush()?;
@@ -149,12 +165,12 @@ impl State {
                 let start_idle = now - t;
                 if start_idle.duration_since(start) > config.cutoff {
                     self.status = WorkingSince(start_idle);
-                    println!("\nYou just started working again.");
+                    self.status_report = format!("You just started working again.");
                 } else if t > config.night_time && self.screen_time > Duration::from_secs(0) {
-                    println!("\nI think it is a new day.  Resetting.");
+                    self.status_report = format!("I think it is a new day.  Resetting.");
                     self.screen_time = Duration::from_secs(0);
                 } else {
-                    print!("\rYou have been idle for {}", t.pretty());
+                    self.latest_update = format!("You have been idle for {}", t.pretty());
                     std::io::stdout().flush()?;
                 }
             }
@@ -164,20 +180,21 @@ impl State {
 }
 
 fn main() -> Result<(), anyhow::Error> {
-    // let main_window = WindowDesc::new(ui_builder())
-    //     .title(LocalizedString::new("open-save-demo").with_placeholder("Opening/Saving Demo"));
-    // let data = "Type here.".to_owned();
-    // AppLauncher::with_window(main_window)
-    //     .delegate(Delegate)
-    //     .log_to_console()
-    //     .launch(data)
-    //     .expect("launch failed");
-
     let mut state = State::default();
+
+    let main_window = WindowDesc::new(ui_builder())
+        .title(LocalizedString::new("open-save-demo").with_placeholder("Opening/Saving Demo"));
+    let data = "Type here.".to_owned();
+    AppLauncher::with_window(main_window)
+        .delegate(Delegate)
+        .log_to_console()
+        .launch(state)
+        .expect("launch failed");
+
     notify("Good morning!")?;
 
     loop {
-        state.update()?;
+        // state.update()?;
         std::thread::sleep(Duration::from_secs(10));
     }
 }
@@ -242,57 +259,40 @@ use druid::{
 
 struct Delegate;
 
-fn ui_builder() -> impl Widget<String> {
-    let rs = FileSpec::new("Rust source", &["rs"]);
-    let txt = FileSpec::new("Text file", &["txt"]);
-    let other = FileSpec::new("Bogus file", &["foo", "bar", "baz"]);
-    // The options can also be generated at runtime,
-    // so to show that off we create a String for the default save name.
-    let default_save_name = String::from("MyFile.txt");
-    let save_dialog_options = FileDialogOptions::new()
-        .allowed_types(vec![rs, txt, other])
-        .default_type(txt)
-        .default_name(default_save_name)
-        .name_label("Target")
-        .title("Choose a target for this lovely file")
-        .button_text("Export");
+// am_prompting: Option<String>,
+// status_report: String,
+// latest_update: String,
 
-    let input = druid::widget::Label::new(move |_s: &String, _env: &Env| "foo".to_string());
-    let save = Button::new("Acknow").on_click(move |ctx, _, _| {
-        ctx.submit_command(druid::commands::SHOW_SAVE_PANEL.with(save_dialog_options.clone()))
-    });
-    let open = Button::new("Open").on_click(move |ctx, _, _| {
+fn ui_builder() -> impl Widget<State> {
+    let input = druid::widget::Label::new(move |_s: &State, _env: &Env| "foo".to_string());
+    let done = Button::new("Open").on_click(move |ctx, _: &mut State, _| {
         println!("opne");
     });
 
     let mut col = Flex::column();
     col.add_child(input);
     col.add_spacer(8.0);
-    col.add_child(save);
-    col.add_child(open);
+    col.add_child(done);
     Align::centered(col)
 }
 
-impl AppDelegate<String> for Delegate {
+impl AppDelegate<State> for Delegate {
     fn command(
         &mut self,
         _ctx: &mut DelegateCtx,
         _target: Target,
         cmd: &druid::Command,
-        data: &mut String,
+        data: &mut State,
         _env: &Env,
     ) -> Handled {
         if let Some(file_info) = cmd.get(commands::SAVE_FILE_AS) {
-            if let Err(e) = std::fs::write(file_info.path(), &data[..]) {
-                println!("Error writing file: {}", e);
-            }
             return Handled::Yes;
         }
         if let Some(file_info) = cmd.get(commands::OPEN_FILE) {
             match std::fs::read_to_string(file_info.path()) {
                 Ok(s) => {
                     let first_line = s.lines().next().unwrap_or("");
-                    *data = first_line.to_owned();
+                    data.latest_update = first_line.to_owned();
                 }
                 Err(e) => {
                     println!("Error opening file: {}", e);
