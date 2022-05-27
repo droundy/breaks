@@ -264,13 +264,13 @@ struct Delegate;
 // latest_update: String,
 
 fn ui_builder() -> impl Widget<State> {
-    let input = druid::widget::Label::new(move |_s: &State, _env: &Env| "foo".to_string());
+    let status_report = druid::widget::Label::new(move |s: &State, _: &Env| s.status_report.clone());
     let done = Button::new("Open").on_click(move |ctx, _: &mut State, _| {
         println!("opne");
     });
 
     let mut col = Flex::column();
-    col.add_child(input);
+    col.add_child(status_report);
     col.add_spacer(8.0);
     col.add_child(done);
     Align::centered(col)
