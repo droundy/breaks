@@ -35,6 +35,16 @@ impl Break {
 }
 
 fn main() -> Result<(), anyhow::Error> {
+
+    // let main_window = WindowDesc::new(ui_builder())
+    //     .title(LocalizedString::new("open-save-demo").with_placeholder("Opening/Saving Demo"));
+    // let data = "Type here.".to_owned();
+    // AppLauncher::with_window(main_window)
+    //     .delegate(Delegate)
+    //     .log_to_console()
+    //     .launch(data)
+    //     .expect("launch failed");
+
     use State::*;
     let mut screen_time = Duration::from_secs(0);
     let mut state = WorkingSince(Instant::now());
@@ -115,7 +125,7 @@ fn main() -> Result<(), anyhow::Error> {
 
 fn request_user(msg: &str) -> anyhow::Result<bool> {
     println!("\nasking: {}", msg);
-    msgbox::create("Break time", msg, msgbox::IconType::Info)?;
+    // msgbox::create("Break time", msg, msgbox::IconType::Info)?;
     Ok(true)
     // Ok(native_dialog::MessageDialog::new()
     //     .set_title(msg)
@@ -126,7 +136,7 @@ fn request_user(msg: &str) -> anyhow::Result<bool> {
 
 fn notify(msg: &str) -> anyhow::Result<()> {
     println!("\n{}", msg);
-    msgbox::create("Break time", msg, msgbox::IconType::Info)?;
+    // msgbox::create("Break time", msg, msgbox::IconType::Info)?;
     // native_dialog::MessageDialog::new()
     //     .set_title(msg)
     //     .set_text("Spend time with your famil!y")
@@ -164,3 +174,76 @@ fn am_in_meet() -> bool {
         false
     }
 }
+
+
+
+use druid::widget::{Align, Button, Flex, TextBox};
+use druid::{
+    commands, AppDelegate, AppLauncher, DelegateCtx, Env, FileDialogOptions, FileSpec,
+    Handled, LocalizedString, Target, Widget, WindowDesc,
+};
+
+struct Delegate;
+
+fn ui_builder() -> impl Widget<String> {
+    let rs = FileSpec::new("Rust source", &["rs"]);
+    let txt = FileSpec::new("Text file", &["txt"]);
+    let other = FileSpec::new("Bogus file", &["foo", "bar", "baz"]);
+    // The options can also be generated at runtime,
+    // so to show that off we create a String for the default save name.
+    let default_save_name = String::from("MyFile.txt");
+    let save_dialog_options = FileDialogOptions::new()
+        .allowed_types(vec![rs, txt, other])
+        .default_type(txt)
+        .default_name(default_save_name)
+        .name_label("Target")
+        .title("Choose a target for this lovely file")
+        .button_text("Export");
+
+    let input = druid::widget::Label::new(move|_s: &String,_env: &Env| "foo".to_string());
+    let save = Button::new("Acknow").on_click(move |ctx, _, _| {
+        ctx.submit_command(druid::commands::SHOW_SAVE_PANEL.with(save_dialog_options.clone()))
+    });
+    let open = Button::new("Open").on_click(move |ctx, _, _| {
+        println!("opne");
+    });
+
+    let mut col = Flex::column();
+    col.add_child(input);
+    col.add_spacer(8.0);
+    col.add_child(save);
+    col.add_child(open);
+    Align::centered(col)
+}
+
+impl AppDelegate<String> for Delegate {
+    fn command(
+        &mut self,
+        _ctx: &mut DelegateCtx,
+        _target: Target,
+        cmd: &druid::Command,
+        data: &mut String,
+        _env: &Env,
+    ) -> Handled {
+        if let Some(file_info) = cmd.get(commands::SAVE_FILE_AS) {
+            if let Err(e) = std::fs::write(file_info.path(), &data[..]) {
+                println!("Error writing file: {}", e);
+            }
+            return Handled::Yes;
+        }
+        if let Some(file_info) = cmd.get(commands::OPEN_FILE) {
+            match std::fs::read_to_string(file_info.path()) {
+                Ok(s) => {
+                    let first_line = s.lines().next().unwrap_or("");
+                    *data = first_line.to_owned();
+                }
+                Err(e) => {
+                    println!("Error opening file: {}", e);
+                }
+            }
+            return Handled::Yes;
+        }
+        Handled::No
+    }
+}
+
