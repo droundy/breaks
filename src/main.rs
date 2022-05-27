@@ -39,6 +39,8 @@ struct Config {
     just_started: Duration,
     good_chunk_of_work: Duration,
     prompt_gap: Duration,
+
+    break_emphasis: Duration,
 }
 
 impl Default for Config {
@@ -68,11 +70,13 @@ impl Default for Config {
             just_started,
             good_chunk_of_work,
             prompt_gap,
+
+            break_emphasis: Duration::from_secs(60 * 2),
         }
     }
 }
 
-use druid::{Data, Lens};
+use druid::{Data, Lens, TimerToken};
 
 #[derive(Clone, Debug, Data, Lens)]
 struct State {
@@ -134,10 +138,6 @@ impl State {
                             "End of day after {}",
                             (this_work + self.screen_time).pretty()
                         ));
-                        notify(&format!(
-                            "End of day after {}",
-                            (this_work + self.screen_time).pretty()
-                        ))?;
                         self.last_prompt = now;
                     } else if (this_work < config.just_started
                         || this_work > config.good_chunk_of_work)
@@ -145,11 +145,18 @@ impl State {
                         && !am_in_meet()
                     {
                         for b in self.breaks.iter_mut() {
-                            if now.duration_since(self.last_prompt) > config.prompt_gap {
-                                if b.check(this_work + self.screen_time) {
+                            if b.check(this_work + self.screen_time) {
+                                if self.am_prompting.is_some()
+                                    || am_in_meet()
+                                    || now.duration_since(self.last_prompt) < self.config.prompt_gap
+                                {
+                                    // For one reason or another, we don't want to bother
+                                    // the user right now.
+                                    self.status_report = format!("Postponing {}", b.prompt);
+                                } else {
                                     self.am_prompting = Some(b.prompt.to_string());
+                                    self.last_prompt = Instant::now();
                                     b.last_done = this_work + self.screen_time;
-                                    self.last_prompt = now;
                                 }
                             }
                         }
@@ -165,7 +172,10 @@ impl State {
                 let start_idle = now - t;
                 if start_idle.duration_since(start) > config.cutoff {
                     self.status = WorkingSince(start_idle);
-                    self.status_report = format!("You just started working again.");
+                    self.status_report = format!(
+                        "You just started working again after a {} break.",
+                        start_idle.duration_since(start).pretty()
+                    );
                 } else if t > config.night_time && self.screen_time > Duration::from_secs(0) {
                     self.status_report = format!("I think it is a new day.  Resetting.");
                     self.screen_time = Duration::from_secs(0);
@@ -179,46 +189,16 @@ impl State {
     }
 }
 
-fn main() -> Result<(), anyhow::Error> {
-    let mut state = State::default();
+fn main() {
+    let state = State::default();
 
     let main_window = WindowDesc::new(ui_builder())
         .title(LocalizedString::new("open-save-demo").with_placeholder("Opening/Saving Demo"));
-    let data = "Type here.".to_owned();
     AppLauncher::with_window(main_window)
         .delegate(Delegate)
         .log_to_console()
         .launch(state)
         .expect("launch failed");
-
-    notify("Good morning!")?;
-
-    loop {
-        // state.update()?;
-        std::thread::sleep(Duration::from_secs(10));
-    }
-}
-
-fn request_user(msg: &str) -> anyhow::Result<bool> {
-    println!("\nasking: {}", msg);
-    // msgbox::create("Break time", msg, msgbox::IconType::Info)?;
-    Ok(true)
-    // Ok(native_dialog::MessageDialog::new()
-    //     .set_title(msg)
-    //     .set_text("Did you?")
-    //     .set_type(native_dialog::MessageType::Warning)
-    //     .show_confirm()?)
-}
-
-fn notify(msg: &str) -> anyhow::Result<()> {
-    println!("\n{}", msg);
-    // msgbox::create("Break time", msg, msgbox::IconType::Info)?;
-    // native_dialog::MessageDialog::new()
-    //     .set_title(msg)
-    //     .set_text("Spend time with your famil!y")
-    //     .set_type(native_dialog::MessageType::Warning)
-    //     .show_alert()?;
-    Ok(())
 }
 
 fn idle_time() -> anyhow::Result<Duration> {
@@ -251,55 +231,99 @@ fn am_in_meet() -> bool {
     }
 }
 
-use druid::widget::{Align, Button, Flex, TextBox};
-use druid::{
-    commands, AppDelegate, AppLauncher, DelegateCtx, Env, FileDialogOptions, FileSpec, Handled,
-    LocalizedString, Target, Widget, WindowDesc,
-};
+use druid::widget::{Align, Button, Flex};
+use druid::{AppDelegate, AppLauncher, Env, LocalizedString, Widget, WindowDesc};
 
 struct Delegate;
 
-// am_prompting: Option<String>,
-// status_report: String,
-// latest_update: String,
-
 fn ui_builder() -> impl Widget<State> {
-    let status_report = druid::widget::Label::new(move |s: &State, _: &Env| s.status_report.clone());
-    let done = Button::new("Open").on_click(move |ctx, _: &mut State, _| {
-        println!("opne");
+    let prompt = druid::widget::Label::new(move |s: &State, _: &Env| {
+        if let Some(p) = &s.am_prompting {
+            p.clone()
+        } else {
+            "".to_string()
+        }
+    })
+    .with_text_size(32.0);
+    let status_report =
+        druid::widget::Label::new(move |s: &State, _: &Env| s.status_report.clone())
+            .with_text_size(24.0);
+    let latest = druid::widget::Label::new(move |s: &State, _: &Env| s.latest_update.clone())
+        .with_text_size(18.0);
+    let done = Button::new("Done").on_click(move |_, state: &mut State, _| {
+        if let Some(prompt) = std::mem::replace(&mut state.am_prompting, None) {
+            state.status_report = format!("Well done with the {}!", prompt);
+        }
     });
 
     let mut col = Flex::column();
+    col.add_child(prompt);
+    col.add_spacer(8.0);
     col.add_child(status_report);
     col.add_spacer(8.0);
+    col.add_child(latest);
+    col.add_spacer(8.0);
     col.add_child(done);
+    col.add_child(TimerWidget {
+        timer_id: TimerToken::INVALID,
+    });
     Align::centered(col)
 }
 
-impl AppDelegate<State> for Delegate {
-    fn command(
+impl AppDelegate<State> for Delegate {}
+
+struct TimerWidget {
+    timer_id: TimerToken,
+}
+impl Widget<State> for TimerWidget {
+    fn event(
         &mut self,
-        _ctx: &mut DelegateCtx,
-        _target: Target,
-        cmd: &druid::Command,
+        ctx: &mut druid::EventCtx,
+        event: &druid::Event,
         data: &mut State,
-        _env: &Env,
-    ) -> Handled {
-        if let Some(file_info) = cmd.get(commands::SAVE_FILE_AS) {
-            return Handled::Yes;
-        }
-        if let Some(file_info) = cmd.get(commands::OPEN_FILE) {
-            match std::fs::read_to_string(file_info.path()) {
-                Ok(s) => {
-                    let first_line = s.lines().next().unwrap_or("");
-                    data.latest_update = first_line.to_owned();
-                }
-                Err(e) => {
-                    println!("Error opening file: {}", e);
+        _: &Env,
+    ) {
+        match event {
+            druid::Event::WindowConnected => {
+                // Start the timer when the application launches
+                self.timer_id = ctx.request_timer(Duration::from_secs(10));
+            }
+            druid::Event::Timer(id) => {
+                if *id == self.timer_id {
+                    data.update().unwrap();
+                    print!("\rupdate: {}", data.latest_update);
+                    std::io::stdout().flush().ok();
+                    ctx.request_layout();
+
+                    if data.am_prompting.is_some()
+                        && data.last_prompt.elapsed() > data.config.break_emphasis
+                    {
+                        ctx.submit_command(druid::commands::HIDE_OTHERS)
+                    }
+                    self.timer_id = ctx.request_timer(Duration::from_secs(10));
                 }
             }
-            return Handled::Yes;
+            _ => (),
         }
-        Handled::No
     }
+
+    fn lifecycle(&mut self, _: &mut druid::LifeCycleCtx, _: &druid::LifeCycle, _: &State, _: &Env) {
+    }
+
+    fn update(&mut self, _: &mut druid::UpdateCtx, _: &State, _: &State, _: &Env) {}
+
+    fn layout(
+        &mut self,
+        ctx: &mut druid::LayoutCtx,
+        _: &druid::BoxConstraints,
+        _: &State,
+        _: &Env,
+    ) -> druid::Size {
+        if self.timer_id == TimerToken::INVALID {
+            self.timer_id = ctx.request_timer(Duration::from_secs(10));
+        }
+        druid::Size::new(0.0, 0.0)
+    }
+
+    fn paint(&mut self, _: &mut druid::PaintCtx, _: &State, _: &Env) {}
 }
