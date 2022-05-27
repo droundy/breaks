@@ -298,7 +298,9 @@ impl Widget<State> for TimerWidget {
                     if data.am_prompting.is_some()
                         && data.last_prompt.elapsed() > data.config.break_emphasis
                     {
-                        ctx.submit_command(druid::commands::HIDE_OTHERS)
+                        ctx.submit_command(druid::commands::HIDE_OTHERS);
+                        data.last_prompt = Instant::now();
+
                     }
                     self.timer_id = ctx.request_timer(Duration::from_secs(10));
                 }
