@@ -1,4 +1,8 @@
-use std::time::{Duration, Instant};
+use std::io::Write;
+use std::{
+    process::Command,
+    time::{Duration, Instant},
+};
 
 enum State {
     IdleSince(Instant),
@@ -35,7 +39,7 @@ fn main() -> Result<(), anyhow::Error> {
     let mut screen_time = Duration::from_secs(0);
     let mut state = WorkingSince(Instant::now());
 
-    let cutoff = Duration::from_secs(60);
+    let cutoff = Duration::from_secs(60 * 10);
     let workday = Duration::from_secs(60 * 60 * 8);
 
     let night_time = Duration::from_secs(60 * 60 * 7);
@@ -45,6 +49,8 @@ fn main() -> Result<(), anyhow::Error> {
 
     let prompt_gap = Duration::from_secs(60 * 5);
     let mut last_prompt = Instant::now();
+
+    notify("Good morning!")?;
 
     let mut breaks = vec![
         Break::new(
@@ -58,15 +64,20 @@ fn main() -> Result<(), anyhow::Error> {
         let now = Instant::now();
         match state {
             WorkingSince(start) => {
-                if t > cutoff {
+                if t > cutoff && !am_in_meet() {
                     let start_idle = now - t;
                     screen_time += start_idle.duration_since(start);
                     state = IdleSince(start_idle);
+                    print!("\rYou have been working {}", screen_time.pretty());
                     println!("\nYou are now AFK!");
                 } else {
                     let this_work = now.duration_since(start);
-                    if this_work + screen_time > workday {
-                        notify(&format!("emd ogh day"))?;
+                    if this_work + screen_time > workday && last_prompt.elapsed() > just_started {
+                        notify(&format!(
+                            "End of day after {}",
+                            (this_work + screen_time).pretty()
+                        ))?;
+                        last_prompt = now;
                     } else if this_work < just_started || this_work > good_chunk_of_work {
                         for b in breaks.iter_mut() {
                             if now.duration_since(last_prompt) > prompt_gap {
@@ -77,9 +88,11 @@ fn main() -> Result<(), anyhow::Error> {
                         }
                     }
                     print!(
-                        "\rYou have been working {}    ",
-                        (this_work + screen_time).pretty()
+                        "\rYou have been working {} (and are {:7} in meet)",
+                        (this_work + screen_time).pretty(),
+                        am_in_meet()
                     );
+                    std::io::stdout().flush()?;
                 }
             }
             IdleSince(start) => {
@@ -91,26 +104,34 @@ fn main() -> Result<(), anyhow::Error> {
                     println!("\nI think it is a new day.  Resetting.");
                     screen_time = Duration::from_secs(0);
                 } else {
-                    print!("\rYou have been idle for {}      ", t.pretty());
+                    print!("\rYou have been idle for {}", t.pretty());
+                    std::io::stdout().flush()?;
                 }
             }
         }
-        std::thread::sleep(Duration::from_secs(60));
+        std::thread::sleep(Duration::from_secs(10));
     }
 }
 
 fn request_user(msg: &str) -> anyhow::Result<bool> {
-    println!("asking: {}", msg);
-    Ok(native_dialog::MessageDialog::new()
-        .set_title(msg)
-        .set_text("Did you?")
-        .set_type(native_dialog::MessageType::Warning)
-        .show_confirm()?)
+    println!("\nasking: {}", msg);
+    msgbox::create("Break time", msg, msgbox::IconType::Info)?;
+    Ok(true)
+    // Ok(native_dialog::MessageDialog::new()
+    //     .set_title(msg)
+    //     .set_text("Did you?")
+    //     .set_type(native_dialog::MessageType::Warning)
+    //     .show_confirm()?)
 }
 
 fn notify(msg: &str) -> anyhow::Result<()> {
     println!("\n{}", msg);
-    msgbox::create("End of day", msg, msgbox::IconType::None)?;
+    msgbox::create("Break time", msg, msgbox::IconType::Info)?;
+    // native_dialog::MessageDialog::new()
+    //     .set_title(msg)
+    //     .set_text("Spend time with your famil!y")
+    //     .set_type(native_dialog::MessageType::Warning)
+    //     .show_alert()?;
     Ok(())
 }
 
@@ -129,5 +150,17 @@ impl Pretty for Duration {
         let hours = total_minutes / 60;
         let minutes = total_minutes - hours * 60;
         format!("{:2}:{:02}", hours, minutes)
+    }
+}
+
+fn am_in_meet() -> bool {
+    if let Ok(output) = Command::new("pmset").arg("-g").output() {
+        let mut output = &output.stdout[..];
+        while !output.starts_with(b"Google Chrome") && !output.is_empty() {
+            output = &output[1..];
+        }
+        output.starts_with(b"Google Chrome")
+    } else {
+        false
     }
 }

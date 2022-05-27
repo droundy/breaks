@@ -7,6 +7,6 @@ edition = "2021"
 
 [dependencies]
 msgbox = "0.7.0"
-native-dialog = "0.6.3"
+# native-dialog = "0.6.3"
 anyhow = "1.0.57"
 user-idle = "0.5.1"
