@@ -4,11 +4,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-enum State {
+#[derive(Clone, Debug)]
+enum Status {
     IdleSince(Instant),
     WorkingSince(Instant),
 }
 
+#[derive(Clone, Debug)]
 struct Break {
     prompt: String,
     after: Duration,
@@ -34,8 +36,134 @@ impl Break {
     }
 }
 
-fn main() -> Result<(), anyhow::Error> {
+#[derive(Clone, Debug)]
+struct Config {
+    breaks: Vec<Break>,
+    cutoff: Duration,
+    workday: Duration,
+    night_time: Duration,
+    just_started: Duration,
+    good_chunk_of_work: Duration,
+    prompt_gap: Duration,
+}
 
+impl Default for Config {
+    fn default() -> Self {
+        let cutoff = Duration::from_secs(60 * 10);
+        let workday = Duration::from_secs(60 * 60 * 8);
+
+        let night_time = Duration::from_secs(60 * 60 * 7);
+
+        let just_started = Duration::from_secs(60 * 5);
+        let good_chunk_of_work = Duration::from_secs(60 * 30);
+
+        let prompt_gap = Duration::from_secs(60 * 5);
+
+        let breaks = vec![
+            Break::new(
+                "Time for a 7-minute exersize",
+                Duration::from_secs(60 * 60 * 3),
+            ),
+            Break::new("Switch to standing desk", Duration::from_secs(60 * 60 * 4)),
+        ];
+        Config {
+            breaks,
+            cutoff,
+            workday,
+            night_time,
+            just_started,
+            good_chunk_of_work,
+            prompt_gap,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct State {
+    config: Config,
+
+    status: Status,
+    breaks: Vec<Break>,
+    screen_time: Duration,
+    last_prompt: Instant,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        State::new(Config::default())
+    }
+}
+
+impl State {
+    fn new(config: Config) -> State {
+        State {
+            status: Status::WorkingSince(Instant::now()),
+            screen_time: Duration::from_secs(0),
+            last_prompt: Instant::now(),
+            breaks: config.breaks.clone(),
+            config,
+        }
+    }
+    fn update(&mut self) -> anyhow::Result<()> {
+        use Status::*;
+        let config = &self.config;
+        let t = idle_time()?;
+        let now = Instant::now();
+        match self.status {
+            WorkingSince(start) => {
+                if t > config.cutoff && !am_in_meet() {
+                    let start_idle = now - t;
+                    self.screen_time += start_idle.duration_since(start);
+                    self.status = IdleSince(start_idle);
+                    print!("\rYou have been working {}", self.screen_time.pretty());
+                    println!("\nYou are now AFK!");
+                } else {
+                    let this_work = now.duration_since(start);
+                    if this_work + self.screen_time > config.workday
+                        && self.last_prompt.elapsed() > config.just_started
+                    {
+                        notify(&format!(
+                            "End of day after {}",
+                            (this_work + self.screen_time).pretty()
+                        ))?;
+                        self.last_prompt = now;
+                    } else if this_work < config.just_started
+                        || this_work > config.good_chunk_of_work
+                    {
+                        for b in self.breaks.iter_mut() {
+                            if now.duration_since(self.last_prompt) > config.prompt_gap {
+                                if b.check(this_work + self.screen_time)? {
+                                    self.last_prompt = now;
+                                }
+                            }
+                        }
+                    }
+                    print!(
+                        "\rYou have been working {}",
+                        (this_work + self.screen_time).pretty()
+                    );
+                    std::io::stdout().flush()?;
+                }
+            }
+            IdleSince(start) => {
+                let start_idle = now - t;
+                if start_idle.duration_since(start) > config.cutoff {
+                    self.status = WorkingSince(start_idle);
+                    println!("\nYou just started working again.");
+                } else if t > config.night_time && self.screen_time > Duration::from_secs(0) {
+                    println!("\nI think it is a new day.  Resetting.");
+                    self.screen_time = Duration::from_secs(0);
+                } else {
+                    print!("\rYou have been idle for {}", t.pretty());
+                    std::io::stdout().flush()?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn main() -> Result<(), anyhow::Error> {
     // let main_window = WindowDesc::new(ui_builder())
     //     .title(LocalizedString::new("open-save-demo").with_placeholder("Opening/Saving Demo"));
     // let data = "Type here.".to_owned();
@@ -45,80 +173,11 @@ fn main() -> Result<(), anyhow::Error> {
     //     .launch(data)
     //     .expect("launch failed");
 
-    use State::*;
-    let mut screen_time = Duration::from_secs(0);
-    let mut state = WorkingSince(Instant::now());
-
-    let cutoff = Duration::from_secs(60 * 10);
-    let workday = Duration::from_secs(60 * 60 * 8);
-
-    let night_time = Duration::from_secs(60 * 60 * 7);
-
-    let just_started = Duration::from_secs(60 * 5);
-    let good_chunk_of_work = Duration::from_secs(60 * 30);
-
-    let prompt_gap = Duration::from_secs(60 * 5);
-    let mut last_prompt = Instant::now();
-
+    let mut state = State::default();
     notify("Good morning!")?;
 
-    let mut breaks = vec![
-        Break::new(
-            "Time for a 7-minute exersize",
-            Duration::from_secs(60 * 60 * 3),
-        ),
-        Break::new("Switch to standing desk", Duration::from_secs(60 * 60 * 4)),
-    ];
     loop {
-        let t = idle_time()?;
-        let now = Instant::now();
-        match state {
-            WorkingSince(start) => {
-                if t > cutoff && !am_in_meet() {
-                    let start_idle = now - t;
-                    screen_time += start_idle.duration_since(start);
-                    state = IdleSince(start_idle);
-                    print!("\rYou have been working {}", screen_time.pretty());
-                    println!("\nYou are now AFK!");
-                } else {
-                    let this_work = now.duration_since(start);
-                    if this_work + screen_time > workday && last_prompt.elapsed() > just_started {
-                        notify(&format!(
-                            "End of day after {}",
-                            (this_work + screen_time).pretty()
-                        ))?;
-                        last_prompt = now;
-                    } else if this_work < just_started || this_work > good_chunk_of_work {
-                        for b in breaks.iter_mut() {
-                            if now.duration_since(last_prompt) > prompt_gap {
-                                if b.check(this_work + screen_time)? {
-                                    last_prompt = now;
-                                }
-                            }
-                        }
-                    }
-                    print!(
-                        "\rYou have been working {} (and are {:7} in meet)",
-                        (this_work + screen_time).pretty(),
-                        am_in_meet()
-                    );
-                    std::io::stdout().flush()?;
-                }
-            }
-            IdleSince(start) => {
-                let start_idle = now - t;
-                if start_idle.duration_since(start) > cutoff {
-                    state = WorkingSince(start_idle);
-                    println!("\nYou just started working again.");
-                } else if t > night_time && screen_time > Duration::from_secs(0) {
-                    println!("\nI think it is a new day.  Resetting.");
-                    screen_time = Duration::from_secs(0);
-                } else {
-                    print!("\rYou have been idle for {}", t.pretty());
-                    std::io::stdout().flush()?;
-                }
-            }
-        }
+        state.update()?;
         std::thread::sleep(Duration::from_secs(10));
     }
 }
@@ -175,12 +234,10 @@ fn am_in_meet() -> bool {
     }
 }
 
-
-
 use druid::widget::{Align, Button, Flex, TextBox};
 use druid::{
-    commands, AppDelegate, AppLauncher, DelegateCtx, Env, FileDialogOptions, FileSpec,
-    Handled, LocalizedString, Target, Widget, WindowDesc,
+    commands, AppDelegate, AppLauncher, DelegateCtx, Env, FileDialogOptions, FileSpec, Handled,
+    LocalizedString, Target, Widget, WindowDesc,
 };
 
 struct Delegate;
@@ -200,7 +257,7 @@ fn ui_builder() -> impl Widget<String> {
         .title("Choose a target for this lovely file")
         .button_text("Export");
 
-    let input = druid::widget::Label::new(move|_s: &String,_env: &Env| "foo".to_string());
+    let input = druid::widget::Label::new(move |_s: &String, _env: &Env| "foo".to_string());
     let save = Button::new("Acknow").on_click(move |ctx, _, _| {
         ctx.submit_command(druid::commands::SHOW_SAVE_PANEL.with(save_dialog_options.clone()))
     });
@@ -246,4 +303,3 @@ impl AppDelegate<String> for Delegate {
         Handled::No
     }
 }
-
