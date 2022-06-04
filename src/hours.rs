@@ -110,7 +110,7 @@ impl<'a> ser::Serialize for Serde<&'a Duration> {
     where
         S: ser::Serializer,
     {
-        tostring(*self.0).serialize(serializer)
+        self.0.pretty().serialize(serializer)
     }
 }
 
@@ -138,18 +138,23 @@ fn parseme(v: &str) -> Result<Duration, ()> {
     Ok(Duration::from_secs_f64((hours * 60.0 + minutes) * 60.0))
 }
 
-fn tostring(x: Duration) -> String {
-    let secs = x.as_secs();
-    let minutes = secs / 60;
-    let hours = minutes / 60;
-    let minutes = minutes - hours * 60;
-    match (hours, minutes) {
-        (0, 0) => "0 minutes".to_string(),
-        (1, 0) => format!("{hours} hour"),
-        (_, 0) => format!("{hours} hours"),
-        (0, 1) => format!("{minutes} minute"),
-        (0, _) => format!("{minutes} minutes"),
-        _ => format!("{hours}:{minutes:02}"),
+pub trait Pretty {
+    fn pretty(&self) -> String;
+}
+impl Pretty for Duration {
+    fn pretty(&self) -> String {
+        let secs = self.as_secs();
+        let minutes = secs / 60;
+        let hours = minutes / 60;
+        let minutes = minutes - hours * 60;
+        match (hours, minutes) {
+            (0, 0) => "0 minutes".to_string(),
+            (1, 0) => format!("{hours} hour"),
+            (_, 0) => format!("{hours} hours"),
+            (0, 1) => format!("{minutes} minute"),
+            (0, _) => format!("{minutes} minutes"),
+            _ => format!("{hours}:{minutes:02}"),
+        }
     }
 }
 
@@ -158,7 +163,7 @@ impl ser::Serialize for Serde<Duration> {
     where
         S: ser::Serializer,
     {
-        tostring(self.0).serialize(serializer)
+        self.0.pretty().serialize(serializer)
     }
 }
 
@@ -184,14 +189,14 @@ mod test {
 
     #[test]
     fn ts() {
-        assert_eq!(tostring(Duration::from_secs(60)).as_str(), "1 minute");
-        assert_eq!(tostring(Duration::from_secs(2 * 60)).as_str(), "2 minutes");
+        assert_eq!(Duration::from_secs(60).pretty().as_str(), "1 minute");
+        assert_eq!(Duration::from_secs(2 * 60).pretty().as_str(), "2 minutes");
         assert_eq!(
-            tostring(Duration::from_secs(3 * 60 * 60)).as_str(),
+            Duration::from_secs(3 * 60 * 60).pretty().as_str(),
             "3 hours"
         );
         assert_eq!(
-            tostring(Duration::from_secs(3 * 60 * 60 + 2 * 60)).as_str(),
+            Duration::from_secs(3 * 60 * 60 + 2 * 60).pretty().as_str(),
             "3:02"
         );
     }

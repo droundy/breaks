@@ -1,7 +1,9 @@
 use druid::{Data, Lens, TimerToken};
 use serde::{Deserialize, Serialize};
+use std::sync::{Arc,Mutex};
 
 mod hours;
+use hours::Pretty;
 
 use std::io::Write;
 use std::{
@@ -53,7 +55,9 @@ pub struct Config {
     prompt_gap: Duration,
 
     #[serde(with = "hours")]
-    break_emphasis: Duration,
+    when_to_emphsasize_break: Duration,
+    #[serde(with = "hours")]
+    when_to_lock_screen: Duration,
     breaks: Vec<Break>,
 }
 
@@ -75,7 +79,8 @@ impl Default for Config {
             good_chunk_of_work: Duration::from_secs(60 * 30),
             prompt_gap: Duration::from_secs(60 * 5), // should be < just_started,
 
-            break_emphasis: Duration::from_secs(60 * 1),
+            when_to_emphsasize_break: Duration::from_secs(60 * 1),
+            when_to_lock_screen: Duration::from_secs(60 * 10),
         }
     }
 }
@@ -96,8 +101,10 @@ impl Config {
     }
 }
 
-#[derive(Clone, Debug, Data, Lens)]
+#[derive(Clone, Data, Lens)]
 struct State {
+    #[data(ignore)]
+    tts: Option<Arc<Mutex<tts::Tts>>>,
     #[data(ignore)]
     config: Config,
 
@@ -128,14 +135,27 @@ impl State {
 impl State {
     fn new(config: Config) -> State {
         State {
+            tts: tts::Tts::default().ok().map(|tts| Arc::new(Mutex::new(tts))),
             status: Status::WorkingSince(Instant::now()),
             screen_time: Duration::from_secs(0),
             last_prompt: Instant::now(),
             breaks: config.breaks.clone(),
             am_prompting: None,
-            status_report: "Starting up...".to_string(),
+            status_report: "".to_string(),
             latest_update: "".to_string(),
             config,
+        }
+    }
+    fn say(&self, msg: &str) {
+        self.tts.as_ref().map(|tts| tts.lock().unwrap().speak(msg, false));
+    }
+    fn prompt(&mut self, msg: String) {
+        self.say(msg.as_str());
+        self.am_prompting = Some(msg);
+    }
+    fn announce(&self) {
+        if let Some(p) = self.am_prompting.as_ref() {
+            self.say(p.as_str());
         }
     }
     fn update(&mut self) -> anyhow::Result<()> {
@@ -158,7 +178,7 @@ impl State {
                     if this_work + self.screen_time > config.workday
                         && self.last_prompt.elapsed() > config.just_started
                     {
-                        self.am_prompting = Some(format!(
+                        self.prompt(format!(
                             "End of day after {}",
                             (this_work + self.screen_time).pretty()
                         ));
@@ -168,6 +188,7 @@ impl State {
                         && self.am_prompting.is_none()
                         && !am_in_meet()
                     {
+                        let mut prompt = None;
                         for b in self.breaks.iter_mut() {
                             if b.check(this_work + self.screen_time) {
                                 let prompt_gap = now.duration_since(self.last_prompt);
@@ -184,15 +205,18 @@ impl State {
                                         (config.prompt_gap - prompt_gap).pretty()
                                     );
                                 } else {
-                                    self.am_prompting = Some(b.prompt.to_string());
+                                    prompt = Some(b.prompt.clone());
                                     self.last_prompt = Instant::now();
                                     b.last_done = this_work + self.screen_time;
                                 }
                             }
                         }
+                        if let Some(p) = prompt {
+                            self.prompt(p);
+                        }
                     }
                     self.latest_update = format!(
-                        "You have been working for {}",
+                        "You've been working for {}",
                         (this_work + self.screen_time).pretty()
                     );
                     std::io::stdout().flush()?;
@@ -203,7 +227,7 @@ impl State {
                 if start_idle.duration_since(start) > config.cutoff {
                     self.status = WorkingSince(start_idle);
                     self.status_report = format!(
-                        "You just started working again after a {} break.",
+                        "You resumed working after a {} break.",
                         start_idle.duration_since(start).pretty()
                     );
                 } else if t > config.night_time && self.screen_time > Duration::from_secs(0) {
@@ -213,7 +237,7 @@ impl State {
                         b.last_done = Duration::from_secs(0);
                     }
                 } else {
-                    self.latest_update = format!("You have been idle for {}", t.pretty());
+                    self.latest_update = format!("You've been idle for {}", t.pretty());
                     std::io::stdout().flush()?;
                 }
             }
@@ -237,19 +261,6 @@ fn main() {
 fn idle_time() -> anyhow::Result<Duration> {
     let idle = user_idle::UserIdle::get_time().map_err(|e| anyhow::anyhow!("{}", e))?;
     Ok(idle.duration())
-}
-
-trait Pretty {
-    fn pretty(&self) -> String;
-}
-impl Pretty for Duration {
-    fn pretty(&self) -> String {
-        let secs = self.as_secs();
-        let total_minutes = (secs + 30) / 60;
-        let hours = total_minutes / 60;
-        let minutes = total_minutes - hours * 60;
-        format!("{:2}:{:02}", hours, minutes)
-    }
 }
 
 fn am_in_meet() -> bool {
@@ -331,7 +342,8 @@ impl Widget<State> for TimerWidget {
 
                     if data.am_prompting.is_some() {
                         ctx.submit_command(druid::commands::SHOW_WINDOW);
-                        if data.last_prompt.elapsed() > data.config.break_emphasis {
+                        if data.last_prompt.elapsed() > data.config.when_to_emphsasize_break {
+                            data.announce();
                             ctx.submit_command(druid::commands::HIDE_OTHERS);
                             data.last_prompt = Instant::now();
                         }
