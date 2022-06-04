@@ -1,3 +1,8 @@
+use druid::{Data, Lens, TimerToken};
+use serde::{Deserialize, Serialize};
+
+mod hours;
+
 use std::io::Write;
 use std::{
     process::Command,
@@ -10,10 +15,12 @@ enum Status {
     WorkingSince(Instant),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct Break {
     prompt: String,
+    #[serde(with = "hours")]
     after: Duration,
+    #[serde(skip)]
     last_done: Duration,
 }
 
@@ -30,53 +37,64 @@ impl Break {
     }
 }
 
-#[derive(Clone, Debug)]
-struct Config {
-    breaks: Vec<Break>,
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Config {
+    #[serde(with = "hours")]
     cutoff: Duration,
+    #[serde(with = "hours")]
     workday: Duration,
+    #[serde(with = "hours")]
     night_time: Duration,
+    #[serde(with = "hours")]
     just_started: Duration,
+    #[serde(with = "hours")]
     good_chunk_of_work: Duration,
+    #[serde(with = "hours")]
     prompt_gap: Duration,
 
+    #[serde(with = "hours")]
     break_emphasis: Duration,
+    breaks: Vec<Break>,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        let cutoff = Duration::from_secs(60 * 10);
-        let workday = Duration::from_secs(60 * 60 * 8);
-
-        let night_time = Duration::from_secs(60 * 60 * 7);
-
-        let just_started = Duration::from_secs(60 * 5);
-        let good_chunk_of_work = Duration::from_secs(60 * 30);
-
-        let prompt_gap = Duration::from_secs(60 * 5);
-
         let breaks = vec![
             Break::new(
                 "Time for a 7-minute exersize",
                 Duration::from_secs(60 * 60 * 3),
             ),
-            Break::new("Switch to standing desk", Duration::from_secs(60 * 60 * 4)),
+            Break::new("Switch to standing desk", Duration::from_secs(60 * 60 * 4 + 60)),
         ];
         Config {
             breaks,
-            cutoff,
-            workday,
-            night_time,
-            just_started,
-            good_chunk_of_work,
-            prompt_gap,
+            cutoff: Duration::from_secs(60 * 10),
+            workday: Duration::from_secs(60 * 60 * 8),
+            night_time: Duration::from_secs(60 * 60 * 7),
+            just_started: Duration::from_secs(60 * 6),
+            good_chunk_of_work: Duration::from_secs(60 * 30),
+            prompt_gap: Duration::from_secs(60 * 5), // should be < just_started,
 
-            break_emphasis: Duration::from_secs(60 * 2),
+            break_emphasis: Duration::from_secs(60 * 1),
         }
     }
 }
-
-use druid::{Data, Lens, TimerToken};
+impl Config {
+    fn load() -> Self {
+        if let Ok(c) = Config::try_load() {
+            c
+        } else {
+            let c = Default::default();
+            std::fs::write("breaks.toml", toml::ser::to_string_pretty(&c).unwrap()).ok();
+            c
+        }
+    }
+    fn try_load() -> anyhow::Result<Self> {
+        let contents = std::fs::read_to_string("breaks.toml")?;
+        let conf: Config = toml::de::from_str(&contents)?;
+        Ok(conf)
+    }
+}
 
 #[derive(Clone, Debug, Data, Lens)]
 struct State {
@@ -98,6 +116,12 @@ struct State {
 impl Default for State {
     fn default() -> Self {
         State::new(Config::default())
+    }
+}
+
+impl State {
+    fn load() -> Self {
+        State::new(Config::load())
     }
 }
 
@@ -146,13 +170,19 @@ impl State {
                     {
                         for b in self.breaks.iter_mut() {
                             if b.check(this_work + self.screen_time) {
-                                if self.am_prompting.is_some()
-                                    || am_in_meet()
-                                    || now.duration_since(self.last_prompt) < self.config.prompt_gap
-                                {
-                                    // For one reason or another, we don't want to bother
-                                    // the user right now.
-                                    self.status_report = format!("Postponing {}", b.prompt);
+                                let prompt_gap = now.duration_since(self.last_prompt);
+                                if self.am_prompting.is_some() {
+                                    self.status_report =
+                                        format!("Postponing {}, see above.", b.prompt);
+                                } else if am_in_meet() {
+                                    self.status_report =
+                                        format!("Postponing {} while you meet.", b.prompt);
+                                } else if prompt_gap < self.config.prompt_gap {
+                                    self.status_report = format!(
+                                        "Postponing {} for {}.",
+                                        b.prompt,
+                                        (config.prompt_gap - prompt_gap).pretty()
+                                    );
                                 } else {
                                     self.am_prompting = Some(b.prompt.to_string());
                                     self.last_prompt = Instant::now();
@@ -179,6 +209,9 @@ impl State {
                 } else if t > config.night_time && self.screen_time > Duration::from_secs(0) {
                     self.status_report = format!("I think it is a new day.  Resetting.");
                     self.screen_time = Duration::from_secs(0);
+                    for b in self.breaks.iter_mut() {
+                        b.last_done = Duration::from_secs(0);
+                    }
                 } else {
                     self.latest_update = format!("You have been idle for {}", t.pretty());
                     std::io::stdout().flush()?;
@@ -190,7 +223,7 @@ impl State {
 }
 
 fn main() {
-    let state = State::default();
+    let state = State::load();
 
     let main_window = WindowDesc::new(ui_builder())
         .title(LocalizedString::new("open-save-demo").with_placeholder("Opening/Saving Demo"));
@@ -250,9 +283,10 @@ fn ui_builder() -> impl Widget<State> {
             .with_text_size(24.0);
     let latest = druid::widget::Label::new(move |s: &State, _: &Env| s.latest_update.clone())
         .with_text_size(18.0);
-    let done = Button::new("Done").on_click(move |_, state: &mut State, _| {
+    let done = Button::new("Done").on_click(move |ctx, state: &mut State, _| {
         if let Some(prompt) = std::mem::replace(&mut state.am_prompting, None) {
             state.status_report = format!("Well done with the {}!", prompt);
+            ctx.submit_command(druid::commands::SHOW_ALL);
         }
     });
 
@@ -295,12 +329,12 @@ impl Widget<State> for TimerWidget {
                     std::io::stdout().flush().ok();
                     ctx.request_layout();
 
-                    if data.am_prompting.is_some()
-                        && data.last_prompt.elapsed() > data.config.break_emphasis
-                    {
-                        ctx.submit_command(druid::commands::HIDE_OTHERS);
-                        data.last_prompt = Instant::now();
-
+                    if data.am_prompting.is_some() {
+                        ctx.submit_command(druid::commands::SHOW_WINDOW);
+                        if data.last_prompt.elapsed() > data.config.break_emphasis {
+                            ctx.submit_command(druid::commands::HIDE_OTHERS);
+                            data.last_prompt = Instant::now();
+                        }
                     }
                     self.timer_id = ctx.request_timer(Duration::from_secs(10));
                 }

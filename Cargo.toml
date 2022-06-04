@@ -12,3 +12,9 @@ anyhow = "1.0.57"
 user-idle = "0.5.1"
 
 druid = { path = "../druid/druid" }
+
+toml = "0.5"
+serde = { version = "1.0", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1.0.81"

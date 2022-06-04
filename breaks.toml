@@ -1,0 +1,15 @@
+cutoff = '10 minutes'
+workday = '8 hours'
+night_time = '7 hours'
+just_started = '6 minutes'
+good_chunk_of_work = '30 minutes'
+prompt_gap = '5 minutes'
+break_emphasis = '1 minute'
+
+[[breaks]]
+prompt = 'Time for a 7-minute exersize'
+after = '3 hours'
+
+[[breaks]]
+prompt = 'Switch to standing desk'
+after = '4:01'
