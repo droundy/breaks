@@ -14,7 +14,7 @@ user-idle = "0.5.1"
 tts = "0.22.1"
 lock = "0.1.0"
 
-druid = { path = "../druid/druid" }
+druid = { git = "https://github.com/linebender/druid" }
 
 home = "0.5.3"
 toml = "0.5"
