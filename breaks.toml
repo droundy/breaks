@@ -4,7 +4,7 @@ night_time = '7 hours'
 just_started = '6 minutes'
 good_chunk_of_work = '30 minutes'
 prompt_gap = '5 minutes'
-when_to_emphsasize_break = '1 minute'
+when_to_emphasize_break = '2 minutes'
 when_to_lock_screen = '10 minutes'
 
 [[breaks]]

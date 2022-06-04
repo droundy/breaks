@@ -1,6 +1,7 @@
+use anyhow::Context;
 use druid::{Data, Lens, TimerToken};
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc,Mutex};
+use std::sync::{Arc, Mutex};
 
 mod hours;
 use hours::Pretty;
@@ -42,17 +43,17 @@ impl Break {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Config {
     #[serde(with = "hours")]
-    cutoff: Duration,
+    max_idle_time_while_working: Duration,
     #[serde(with = "hours")]
     workday: Duration,
     #[serde(with = "hours")]
-    night_time: Duration,
+    day_resets_after: Duration,
     #[serde(with = "hours")]
     just_started: Duration,
     #[serde(with = "hours")]
     good_chunk_of_work: Duration,
     #[serde(with = "hours")]
-    prompt_gap: Duration,
+    minimum_time_between_breaks: Duration,
 
     #[serde(with = "hours")]
     when_to_emphasize_break: Duration,
@@ -68,16 +69,20 @@ impl Default for Config {
                 "Time for a 7-minute exersize",
                 Duration::from_secs(60 * 60 * 3),
             ),
-            Break::new("Switch to standing desk", Duration::from_secs(60 * 60 * 4 + 60)),
+            Break::new(
+                "Switch to standing desk",
+                Duration::from_secs(60 * 60 * 4 + 60),
+            ),
         ];
         Config {
             breaks,
-            cutoff: Duration::from_secs(60 * 10),
+            max_idle_time_while_working: Duration::from_secs(60 * 10),
             workday: Duration::from_secs(60 * 60 * 8),
-            night_time: Duration::from_secs(60 * 60 * 7),
+            day_resets_after: Duration::from_secs(60 * 60 * 7),
+
             just_started: Duration::from_secs(60 * 6),
             good_chunk_of_work: Duration::from_secs(60 * 30),
-            prompt_gap: Duration::from_secs(60 * 5), // should be < just_started,
+            minimum_time_between_breaks: Duration::from_secs(60 * 5), // should be < just_started,
 
             when_to_emphasize_break: Duration::from_secs(60 * 2),
             when_to_lock_screen: Duration::from_secs(60 * 10),
@@ -85,19 +90,28 @@ impl Default for Config {
     }
 }
 impl Config {
-    fn load() -> Self {
-        if let Ok(c) = Config::try_load() {
-            c
+    fn config_path() -> std::path::PathBuf {
+        if let Some(h) = home::home_dir() {
+            std::fs::create_dir_all(h.join(".config/")).ok();
+            h.join(".config/breaks.toml")
         } else {
-            let c = Default::default();
-            std::fs::write("breaks.toml", toml::ser::to_string_pretty(&c).unwrap()).ok();
-            c
+            "breaks.toml".into()
         }
     }
-    fn try_load() -> anyhow::Result<Self> {
-        let contents = std::fs::read_to_string("breaks.toml")?;
-        let conf: Config = toml::de::from_str(&contents)?;
-        Ok(conf)
+    fn load() -> anyhow::Result<Self> {
+        if let Ok(contents) = std::fs::read_to_string(Self::config_path()) {
+            // If file is readable but not parsable, we want to die with a nice error.
+            toml::de::from_str(&contents)
+                .context(format!("Unable to parse {:?}", Self::config_path()))
+        } else {
+            let c = Default::default();
+            std::fs::write(
+                Self::config_path(),
+                toml::ser::to_string_pretty(&c).unwrap(),
+            )
+            .ok();
+            Ok(c)
+        }
     }
 }
 
@@ -129,15 +143,17 @@ impl Default for State {
 }
 
 impl State {
-    fn load() -> Self {
-        State::new(Config::load())
+    fn load() -> anyhow::Result<Self> {
+        Ok(State::new(Config::load()?))
     }
 }
 
 impl State {
     fn new(config: Config) -> State {
         State {
-            tts: tts::Tts::default().ok().map(|tts| Arc::new(Mutex::new(tts))),
+            tts: tts::Tts::default()
+                .ok()
+                .map(|tts| Arc::new(Mutex::new(tts))),
             status: Status::WorkingSince(Instant::now()),
             screen_time: Duration::from_secs(0),
             last_prompt: Instant::now(),
@@ -150,7 +166,9 @@ impl State {
         }
     }
     fn say(&self, msg: &str) {
-        self.tts.as_ref().map(|tts| tts.lock().unwrap().speak(msg, false));
+        self.tts
+            .as_ref()
+            .map(|tts| tts.lock().unwrap().speak(msg, false));
     }
     fn prompt(&mut self, msg: String) {
         self.say(msg.as_str());
@@ -168,7 +186,7 @@ impl State {
         let now = Instant::now();
         match self.status {
             WorkingSince(start) => {
-                if t > config.cutoff && !am_in_meet() {
+                if t > config.max_idle_time_while_working && !am_in_meet() {
                     let start_idle = now - t;
                     self.screen_time += start_idle.duration_since(start);
                     self.status = IdleSince(start_idle);
@@ -201,11 +219,11 @@ impl State {
                                 } else if am_in_meet() {
                                     self.status_report =
                                         format!("Postponing {} while you meet.", b.prompt);
-                                } else if prompt_gap < self.config.prompt_gap {
+                                } else if prompt_gap < self.config.minimum_time_between_breaks {
                                     self.status_report = format!(
                                         "Postponing {} for {}.",
                                         b.prompt,
-                                        (config.prompt_gap - prompt_gap).pretty()
+                                        (config.minimum_time_between_breaks - prompt_gap).pretty()
                                     );
                                 } else {
                                     prompt = Some(b.prompt.clone());
@@ -227,13 +245,13 @@ impl State {
             }
             IdleSince(start) => {
                 let start_idle = now - t;
-                if start_idle.duration_since(start) > config.cutoff {
+                if start_idle.duration_since(start) > config.max_idle_time_while_working {
                     self.status = WorkingSince(start_idle);
                     self.status_report = format!(
                         "You resumed working after a {} break.",
                         start_idle.duration_since(start).pretty()
                     );
-                } else if t > config.night_time && self.screen_time > Duration::from_secs(0) {
+                } else if t > config.day_resets_after && self.screen_time > Duration::from_secs(0) {
                     self.status_report = format!("I think it is a new day.  Resetting.");
                     self.screen_time = Duration::from_secs(0);
                     for b in self.breaks.iter_mut() {
@@ -249,8 +267,8 @@ impl State {
     }
 }
 
-fn main() {
-    let state = State::load();
+fn main() -> anyhow::Result<()> {
+    let state = State::load()?;
 
     let main_window = WindowDesc::new(ui_builder())
         .title(LocalizedString::new("open-save-demo").with_placeholder("Opening/Saving Demo"));
@@ -259,6 +277,7 @@ fn main() {
         .log_to_console()
         .launch(state)
         .expect("launch failed");
+    Ok(())
 }
 
 fn idle_time() -> anyhow::Result<Duration> {
