@@ -55,7 +55,7 @@ pub struct Config {
     prompt_gap: Duration,
 
     #[serde(with = "hours")]
-    when_to_emphsasize_break: Duration,
+    when_to_emphasize_break: Duration,
     #[serde(with = "hours")]
     when_to_lock_screen: Duration,
     breaks: Vec<Break>,
@@ -79,7 +79,7 @@ impl Default for Config {
             good_chunk_of_work: Duration::from_secs(60 * 30),
             prompt_gap: Duration::from_secs(60 * 5), // should be < just_started,
 
-            when_to_emphsasize_break: Duration::from_secs(60 * 1),
+            when_to_emphasize_break: Duration::from_secs(60 * 2),
             when_to_lock_screen: Duration::from_secs(60 * 10),
         }
     }
@@ -117,7 +117,9 @@ struct State {
     #[data(ignore)]
     breaks: Vec<Break>,
     screen_time: Duration,
+
     last_prompt: Instant,
+    am_emphasizing: bool,
 }
 
 impl Default for State {
@@ -143,6 +145,7 @@ impl State {
             am_prompting: None,
             status_report: "".to_string(),
             latest_update: "".to_string(),
+            am_emphasizing: false,
             config,
         }
     }
@@ -295,6 +298,7 @@ fn ui_builder() -> impl Widget<State> {
     let latest = druid::widget::Label::new(move |s: &State, _: &Env| s.latest_update.clone())
         .with_text_size(18.0);
     let done = Button::new("Done").on_click(move |ctx, state: &mut State, _| {
+        state.am_emphasizing = false;
         if let Some(prompt) = std::mem::replace(&mut state.am_prompting, None) {
             state.status_report = format!("Well done with the {}!", prompt);
             ctx.submit_command(druid::commands::SHOW_ALL);
@@ -342,10 +346,12 @@ impl Widget<State> for TimerWidget {
 
                     if data.am_prompting.is_some() {
                         ctx.submit_command(druid::commands::SHOW_WINDOW);
-                        if data.last_prompt.elapsed() > data.config.when_to_emphsasize_break {
-                            data.announce();
+                        if data.last_prompt.elapsed() > data.config.when_to_emphasize_break {
                             ctx.submit_command(druid::commands::HIDE_OTHERS);
                             data.last_prompt = Instant::now();
+                        }
+                        if data.am_emphasizing {
+                            data.announce();
                         }
                     }
                     self.timer_id = ctx.request_timer(Duration::from_secs(10));
