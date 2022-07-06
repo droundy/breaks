@@ -179,6 +179,12 @@ impl State {
             self.say(p.as_str());
         }
     }
+    fn after_last_prompt(&self) -> bool {
+        Instant::now() > self.last_prompt
+    }
+    fn since_last_prompt(&self) -> Duration {
+        Instant::now().saturating_duration_since(self.last_prompt)
+    }
     fn update(&mut self) -> anyhow::Result<()> {
         use Status::*;
         let config = &self.config;
@@ -197,7 +203,7 @@ impl State {
                 } else {
                     let this_work = now.duration_since(start);
                     if this_work + self.screen_time > config.workday
-                        && self.last_prompt.elapsed() > config.just_started
+                        && self.since_last_prompt() > config.just_started
                     {
                         self.prompt(format!(
                             "End of day after {}",
@@ -271,7 +277,7 @@ fn main() -> anyhow::Result<()> {
     let state = State::load()?;
 
     let main_window = WindowDesc::new(ui_builder())
-        .title(LocalizedString::new("open-save-demo").with_placeholder("Opening/Saving Demo"));
+        .title(LocalizedString::new("breaks").with_placeholder("Breaks and workday reminders"));
     AppLauncher::with_window(main_window)
         .delegate(Delegate)
         .log_to_console()
@@ -316,13 +322,36 @@ fn ui_builder() -> impl Widget<State> {
             .with_text_size(24.0);
     let latest = druid::widget::Label::new(move |s: &State, _: &Env| s.latest_update.clone())
         .with_text_size(18.0);
-    let done = Button::new("Done").on_click(move |ctx, state: &mut State, _| {
-        state.am_emphasizing = false;
-        if let Some(prompt) = std::mem::replace(&mut state.am_prompting, None) {
-            state.status_report = format!("Well done with the {}!", prompt);
-            ctx.submit_command(druid::commands::SHOW_ALL);
-        }
-    });
+    let done = druid::widget::DisabledIf::new(
+        Button::new("Done").on_click(move |ctx, state: &mut State, _| {
+            state.am_emphasizing = false;
+            if let Some(prompt) = &state.am_prompting {
+                state.status_report = format!("Well done with the {}!", prompt);
+                ctx.submit_command(druid::commands::SHOW_ALL);
+            }
+        }),
+        |state, _| state.am_prompting.is_none(),
+    );
+    let delay_15m = druid::widget::DisabledIf::new(
+        Button::new("Delay 15 minutes").on_click(move |_, state: &mut State, _| {
+            state.am_emphasizing = false;
+            if let Some(prompt) = &state.am_prompting {
+                state.last_prompt = Instant::now() + Duration::from_secs(15 * 60);
+                state.status_report = format!("Putting off {}...", prompt);
+            }
+        }),
+        |state, _| state.am_prompting.is_none(),
+    );
+    let delay_1h = druid::widget::DisabledIf::new(
+        Button::new("Delay 1 hour").on_click(move |_, state: &mut State, _| {
+            state.am_emphasizing = false;
+            if let Some(prompt) = &state.am_prompting {
+                state.last_prompt = Instant::now() + Duration::from_secs(60 * 60);
+                state.status_report = format!("Putting off {}...", prompt);
+            }
+        }),
+        |state, _| state.am_prompting.is_none(),
+    );
 
     let mut col = Flex::column();
     col.add_child(prompt);
@@ -331,7 +360,11 @@ fn ui_builder() -> impl Widget<State> {
     col.add_spacer(8.0);
     col.add_child(latest);
     col.add_spacer(8.0);
-    col.add_child(done);
+    let mut buttons = Flex::row();
+    buttons.add_child(done);
+    buttons.add_child(delay_15m);
+    buttons.add_child(delay_1h);
+    col.add_child(buttons);
     col.add_child(TimerWidget {
         timer_id: TimerToken::INVALID,
     });
@@ -363,9 +396,9 @@ impl Widget<State> for TimerWidget {
                     std::io::stdout().flush().ok();
                     ctx.request_layout();
 
-                    if data.am_prompting.is_some() {
+                    if data.am_prompting.is_some() && data.after_last_prompt() {
                         ctx.submit_command(druid::commands::SHOW_WINDOW);
-                        if data.last_prompt.elapsed() > data.config.when_to_emphasize_break {
+                        if data.since_last_prompt() > data.config.when_to_emphasize_break {
                             ctx.submit_command(druid::commands::HIDE_OTHERS);
                             data.last_prompt = Instant::now();
                         }
