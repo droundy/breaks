@@ -325,7 +325,7 @@ fn ui_builder() -> impl Widget<State> {
     let done = druid::widget::DisabledIf::new(
         Button::new("Done").on_click(move |ctx, state: &mut State, _| {
             state.am_emphasizing = false;
-            if let Some(prompt) = &state.am_prompting {
+            if let Some(prompt) = std::mem::replace(&mut state.am_prompting, None) {
                 state.status_report = format!("Well done with the {}!", prompt);
                 ctx.submit_command(druid::commands::SHOW_ALL);
             }
