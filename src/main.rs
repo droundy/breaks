@@ -133,7 +133,6 @@ struct State {
     screen_time: Duration,
 
     last_prompt: Instant,
-    am_emphasizing: bool,
 }
 
 impl Default for State {
@@ -161,7 +160,6 @@ impl State {
             am_prompting: None,
             status_report: "".to_string(),
             latest_update: "".to_string(),
-            am_emphasizing: false,
             config,
         }
     }
@@ -324,7 +322,6 @@ fn ui_builder() -> impl Widget<State> {
         .with_text_size(18.0);
     let done = druid::widget::DisabledIf::new(
         Button::new("Done").on_click(move |ctx, state: &mut State, _| {
-            state.am_emphasizing = false;
             if let Some(prompt) = std::mem::replace(&mut state.am_prompting, None) {
                 state.status_report = format!("Well done with the {}!", prompt);
                 ctx.submit_command(druid::commands::SHOW_ALL);
@@ -334,7 +331,6 @@ fn ui_builder() -> impl Widget<State> {
     );
     let delay_15m = druid::widget::DisabledIf::new(
         Button::new("Delay 15 minutes").on_click(move |_, state: &mut State, _| {
-            state.am_emphasizing = false;
             if let Some(prompt) = &state.am_prompting {
                 state.last_prompt = Instant::now() + Duration::from_secs(15 * 60);
                 state.status_report = format!("Putting off {}...", prompt);
@@ -344,7 +340,6 @@ fn ui_builder() -> impl Widget<State> {
     );
     let delay_1h = druid::widget::DisabledIf::new(
         Button::new("Delay 1 hour").on_click(move |_, state: &mut State, _| {
-            state.am_emphasizing = false;
             if let Some(prompt) = &state.am_prompting {
                 state.last_prompt = Instant::now() + Duration::from_secs(60 * 60);
                 state.status_report = format!("Putting off {}...", prompt);
@@ -402,9 +397,7 @@ impl Widget<State> for TimerWidget {
                             ctx.submit_command(druid::commands::HIDE_OTHERS);
                             data.last_prompt = Instant::now();
                         }
-                        if data.am_emphasizing {
-                            data.announce();
-                        }
+                        data.announce();
                     }
                     self.timer_id = ctx.request_timer(Duration::from_secs(10));
                 }
