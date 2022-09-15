@@ -202,6 +202,7 @@ impl State {
                     let this_work = now.duration_since(start);
                     if this_work + self.screen_time > config.workday
                         && self.since_last_prompt() > config.just_started
+                        && self.since_last_prompt() > config.max_idle_time_while_working
                     {
                         self.prompt(format!(
                             "End of day after {}",
