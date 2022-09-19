@@ -202,7 +202,7 @@ impl State {
                     let this_work = now.duration_since(start);
                     if this_work + self.screen_time > config.workday
                         && self.since_last_prompt() > config.just_started
-                        && self.since_last_prompt() > config.max_idle_time_while_working
+                        && self.since_last_prompt() > 2 * config.max_idle_time_while_working
                     {
                         self.prompt(format!(
                             "End of day after {}",
@@ -213,6 +213,8 @@ impl State {
                         || this_work > config.good_chunk_of_work)
                         && self.am_prompting.is_none()
                         && !am_in_meet()
+                        && this_work < config.workday
+                    // Stop giving reminders at end of day.
                     {
                         let mut prompt = None;
                         for b in self.breaks.iter_mut() {
