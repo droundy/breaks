@@ -213,7 +213,7 @@ impl State {
                         || this_work > config.good_chunk_of_work)
                         && self.am_prompting.is_none()
                         && !am_in_meet()
-                        && this_work < config.workday
+                        && this_work + self.screen_time < config.workday
                     // Stop giving reminders at end of day.
                     {
                         let mut prompt = None;
