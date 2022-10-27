@@ -199,7 +199,7 @@ impl State {
                         self.screen_time.pretty()
                     );
                 } else {
-                    let this_work = now.duration_since(start);
+                    let this_work = (now - t).duration_since(start);
                     if this_work + self.screen_time > config.workday
                         && self.since_last_prompt() > config.just_started
                         && self.since_last_prompt() > 2 * config.max_idle_time_while_working
