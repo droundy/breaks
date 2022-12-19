@@ -203,6 +203,8 @@ impl State {
                     if this_work + self.screen_time > config.workday
                         && self.since_last_prompt() > config.just_started
                         && self.since_last_prompt() > 2 * config.max_idle_time_while_working
+                        && this_work > config.just_started
+                        && this_work > 2 * config.max_idle_time_while_working
                     {
                         self.prompt(format!(
                             "End of day after {}",
