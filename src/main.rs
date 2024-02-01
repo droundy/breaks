@@ -98,6 +98,15 @@ impl Config {
             "breaks.toml".into()
         }
     }
+    fn is_new_day(&self, t: Duration) -> bool {
+        if self.day_resets_after.as_secs() == 0 {
+            let now = chrono::Local::now();
+            let before = now - chrono::Duration::from_std(t).unwrap();
+            before.date_naive() != now.date_naive()
+        } else {
+            t > self.day_resets_after
+        }
+    }
     fn load() -> anyhow::Result<Self> {
         if let Ok(contents) = std::fs::read_to_string(Self::config_path()) {
             // If file is readable but not parsable, we want to die with a nice error.
@@ -260,7 +269,7 @@ impl State {
                         "You resumed working after a {} break.",
                         start_idle.duration_since(start).pretty()
                     );
-                } else if t > config.day_resets_after && self.screen_time > Duration::from_secs(0) {
+                } else if config.is_new_day(t) && self.screen_time > Duration::from_secs(0) {
                     self.status_report = format!("I think it is a new day.  Resetting.");
                     self.screen_time = Duration::from_secs(0);
                     for b in self.breaks.iter_mut() {
